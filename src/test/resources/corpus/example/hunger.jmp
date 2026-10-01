@@ -1,0 +1,15 @@
+// Players get hungry: -1 hp every 3 ticks, and +3 at sunrise. Uses the world's time.
+boolean wasDay = true;
+
+void onTick(int t) {
+    boolean day = server.world().isDay();
+    for (dyn p : server.players()) {
+        if (t % 3 == 0) p.damage(1);
+        if (p.health() <= 5) p.send("you are starving: " + p.health() + " hp");
+    }
+    if (day && !wasDay) {
+        for (dyn p : server.players()) p.heal(3);
+        server.broadcast("the sun rises - everyone +3 hp");
+    }
+    wasDay = day;
+}

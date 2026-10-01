@@ -1,0 +1,62 @@
+# A release: push a tag v<version> (the version of build.gradle.kts). The plugin is tested, built and attached to
+# the GitHub release; with the secret JETBRAINS_TOKEN (a JetBrains Marketplace token) it is published as well -
+# the very first upload of the plugin is done by hand on plugins.jetbrains.com. Every push and pull request is
+# built and tested. The plugin carries the language itself (a port of jumper-lang/jumper): it needs nothing else.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      PUBLISH_TOKEN: ${{ secrets.JETBRAINS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Version
+        id: v
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' build.gradle.kts)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "v$v" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME, but build.gradle.kts says $v"
+            exit 1
+          fi
+
+      - name: Test and build
+        run: |
+          chmod +x gradlew
+          ./gradlew test buildPlugin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin
+          path: build/distributions/*.zip
+
+      - name: GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/distributions/*.zip
+          body: |
+            Install (IntelliJ IDEA 2025.1+): Settings | Plugins | gear | Install Plugin from Disk... -> the zip below, or from the Marketplace.
+
+      - name: Publish to JetBrains Marketplace
+        if: startsWith(github.ref, 'refs/tags/') && env.PUBLISH_TOKEN != ''
+        run: ./gradlew publishPlugin

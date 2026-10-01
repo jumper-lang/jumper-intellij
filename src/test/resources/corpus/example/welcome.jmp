@@ -1,0 +1,39 @@
+// Greets players and remembers how many times each came.
+// Edit it while the server runs and type `jumper reload` - the next event runs the new code.
+import java.util.HashMap;
+import java.io.File;
+
+dyn visits = new HashMap();       // script state: starts over on `jumper reload`
+
+void onEnable() {
+    server.log("ready in world " + server.world().name());
+}
+
+void onJoin(dyn p) {
+    int n = visits.getOrDefault(p.name(), 0) + 1;
+    visits.put(p.name(), n);
+    p.send(n == 1 ? "Welcome, " + p.name() + "!" : "Welcome back, " + p.name() + " (visit " + n + ")");
+    server.broadcast(p.name() + " joined, " + server.players().size() + " online");
+}
+
+void onQuit(dyn p) {
+    server.log(p.name() + " left after " + visits.get(p.name()) + " visit(s)");
+}
+
+void onDisable() {
+    server.log("bye, " + visits.size() + " player(s) seen");
+}
+dyn a = 1 +;
+int b = "s";
+dyn c = 0x;
+dyn s = "ab\q";
+
+dyn x = 0x1FFFFFFFF;
+dyn y = 1e;
+
+break;                                   // вне цикла
+class A extends A { }                    // цикл наследования
+class P { int m() { return 1; } int m() { return 2; } }   // метод дважды
+dyn List = 1; import java.util.List;     // import поверх имени
+
+

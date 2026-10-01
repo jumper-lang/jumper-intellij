@@ -1,0 +1,5 @@
+// Reaches for the JVM through reflection. getClass() is closed in a sandbox, and even where Class is
+// allowed, a class loader never is: the script is stopped at load time and skipped.
+server.log("trying to get the class loader...");
+dyn loader = server.getClass().getClassLoader();
+server.log("must not be printed: " + loader);

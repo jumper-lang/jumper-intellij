@@ -1,0 +1,4 @@
+// Settings of the Jumper plugin - a Jumper config (.jmc): values, variables, if/else; no loops,
+// no functions, no Java. Read on every `jumper reload`.
+boolean strict = true;
+int tickBudgetMs = strict ? 200 : 1000;   // a script handler that runs longer is stopped and the script disabled

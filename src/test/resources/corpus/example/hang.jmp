@@ -1,0 +1,17 @@
+// Hangs on tick 4. The watchdog (tickBudgetMs in config.jmc) cancels it and the plugin disables it
+// until `jumper reload`; the server, the plugin and the other scripts keep ticking.
+int timer = 0;
+void onTick(int t) {
+    //int timer = 0;
+
+    if (t % 5 == 0) { 
+      timer++;
+      server.log("tick: " + timer * 5);
+    }
+
+//    if (t == 4) {
+//        server.log("tick " + t + ": entering an endless loop");
+//        dyn n = 0;
+//        while (true) { n++; }
+//    }
+}

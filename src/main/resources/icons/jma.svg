@@ -1,0 +1,12 @@
+
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g transform="translate(0.5 3)">
+<g fill="none" transform="translate(-1.5 -3.5)"><g>
+<path d="M11.5 5.5A2 2 0 0 0 7.5 5.5C4.2 5.9 1.5 8.7 1.5 12C1.5 12.83 2.17 13.5 3 13.5H9.5V11.9C9.5 11.25 9.8 10.8 10.3 10.3L13.35 8.6C14.05 8.2 14.5 7.65 14.5 7.05C14.5 6.55 14.22 6.1 13.78 5.87C12.8 5.35 11.5 5.5 11.5 5.5Z" fill="#F2FCF3" stroke="#208A3C" stroke-linejoin="round"></path>
+<path d="M5 9.5C5.8 8.8 6.75 8.4 7.6 8.6C8.7 8.9 9.5 10.2 9.5 11.9" stroke="#208A3C" stroke-linecap="round"></path>
+<path d="M10.3 10.3L12.9 13.5H14" stroke="#208A3C" stroke-linecap="round" stroke-linejoin="round"></path>
+<circle cx="9.5" cy="5.5" r="0.5" fill="#208A3C"></circle>
+</g></g>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M 11.95 9.3 C 11.7184 10.4411 10.7095 11.3 9.5 11.3 C 8.1193 11.3 7 10.1807 7 8.8 C 7 7.4193 8.1193 6.3 9.5 6.3 C 10.7095 6.3 11.7184 7.1589 11.95 8.3 L 15 8.3 L 15 9.3 L 14 9.3 L 14 11.3 L 13 11.3 L 13 9.3 L 11.95 9.3 Z M 9.5 10.3 C 10.3284 10.3 11 9.6284 11 8.8 C 11 7.9716 10.3284 7.3 9.5 7.3 C 8.6716 7.3 8 7.9716 8 8.8 C 8 9.6284 8.6716 10.3 9.5 10.3 Z" fill="#E66D17"></path>
+</g>
+</svg>

@@ -1,0 +1,97 @@
+// syntax.jmp - every piece of Jumper syntax, for testing the highlighting
+/* a block comment
+   over two lines - TODO: nothing */
+import java.util.HashMap;
+import java.util.Random;
+import java.util.ArrayList;
+
+// literals: numbers, strings, escapes, constants
+int i = 42;
+long big = 9000000000L;
+double d = 3.14e-2;
+int hex = 0xFF;
+String s = "tab\t quote\" unicode\u00e9";
+String c = 'c';
+boolean yes = true, no = false;
+dyn nothing = null;
+
+// tables: name keys, string keys, number keys, computed keys, nesting; arrays
+dyn cfg = {
+    name: "demo",
+    "with space": 1,
+    2: "two",
+    [i + 1]: "computed",
+    inner: { depth: 2, list: [1, 2, 3] },
+    handler: (x) -> x * 2
+};
+dyn arr = {10, 20, 30};
+dyn empty = table();
+cfg.name = "renamed";
+cfg["inner"].depth += 1;
+
+// Java objects and Java classes as types
+Random rand = new Random(7);
+HashMap map = new HashMap();
+map.put("k", rand.nextInt(10));
+dyn raw = new int[3];
+dyn max = Math.max(i, hex);
+StringBuilder sb = new StringBuilder();
+
+// operators
+dyn ops = (i + 1) * 2 - 3 / 4 % 5;
+dyn bits = (i & 3) | (i ^ 5) << 2 >> 1 >>> 1;
+dyn logic = !(yes && no) || i >= 10 && i != 0;
+i++; --i; i -= 2; i *= 3;
+dyn pick = i > 0 ? "pos" : "neg";
+
+// functions, lambdas, closures
+int add(int a, int b) { return a + b; }
+void log(dyn msg) { println("[log] " + msg); }
+dyn twice = f -> x -> f(f(x));
+dyn inc = (int n) -> { return n + 1; };
+
+// classes: fields, statics, constructor, methods, inheritance, super, this
+class Shape {
+    String name;
+    static int count = 0;
+    Shape(String name) { this.name = name; count++; }
+    double area() { return 0; }
+    String toString() { return name + " " + area(); }
+}
+class Circle extends Shape {
+    double r;
+    Circle(double r) { super("circle"); this.r = r; }
+    double area() { return Math.PI * r * r; }
+    static Circle unit() { return new Circle(1); }
+}
+
+// control flow
+for (int k = 0; k < 3; k++) { if (k == 1) continue; }
+for (dyn v : arr) { if (v > 20) break; }
+while (i > 100) i--;
+do { i++; } while (i < 0);
+switch (i) {
+    case 1, 2 -> log("small");
+    default   -> { log("other"); }
+}
+String size = switch (len(arr)) {
+    case 0  -> "empty";
+    default -> "items: " + len(arr);
+};
+try {
+    throw "boom";
+} catch (e) {
+    log(e);
+} finally {
+    sb.append("done");
+}
+
+// hooks the host calls, and its global `server`
+void onEnable() {
+    Shape sh = Circle.unit();
+    server.log(sh.toString() + " " + twice(inc)(1) + " " + add(1, 2) + " " + pick + size);
+}
+
+void onJoin(dyn p) {
+    p.send("hi, " + p.name() + " " + cfg.inner.list[0]);
+}

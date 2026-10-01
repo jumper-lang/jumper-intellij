@@ -1,0 +1,16 @@
+// Access policy for the scripts in scripts/ - written in Jumper itself.
+// A whitelist: anything not listed is unavailable to scripts.
+
+Policy.allowPackage("example.jumper.api");        // the Jumper API: server, players, world...
+Policy.allowClass("example.jumper.api.ScriptPlayer")
+      .denyMethod("kick");                        // ...except kicking: that is for the server's own plugins
+Policy.denyClass("example.jumper.api.Players");   // the plugin's bookkeeping, not for scripts
+
+Policy.allowPackage("java.util");                 // collections
+Policy.allowPackage("java.lang");                 // String, Math, Integer... - but not Class/Runtime/System/Thread
+Policy.allowMethod("java.lang.System", "currentTimeMillis");
+
+Policy.maxTableSize(100000);                      // a runaway `while (true) list.add(x)` stops here, not at -Xmx
+
+// Not listed, so closed: the server API itself (example.api) - scripts only see it through the
+// Jumper API - and everything else in the JVM.

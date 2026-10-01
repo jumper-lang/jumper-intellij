@@ -1,0 +1,7 @@
+// Tries to kick everyone who joins. ScriptPlayer.kick is closed in scripts.jma: the call is stopped
+// before it runs (SecurityException), this script is disabled, the player stays online.
+void onJoin(dyn p) {
+    server.log("kicking " + p.name() + "...");
+    p.kick("go away");
+    server.log("must not be printed");
+}

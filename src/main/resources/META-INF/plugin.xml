@@ -1,0 +1,68 @@
+<!-- The Jumper language in IntelliJ IDEA: a language plugin of its own, laid out like intellij-scala
+     (Language/FileType/Icons, lexer, parser, PSI, annotators, IDE features on the PSI), with the rules of the
+     language and of its language server ported from jumper-lang/jumper - no language server runs. -->
+<idea-plugin>
+    <id>me.padej.jumper.Jumper</id>
+    <name>Jumper</name>
+    <vendor url="https://github.com/jumper-lang">Padej_</vendor>
+
+    <description><![CDATA[
+        Support for <b>Jumper</b> - a scripting language for the JVM with the syntax of Java and the lightness of Lua:
+        scripts (<code>.jmp</code>), configs (<code>.jmc</code>) and access policies (<code>.jma</code>).
+        <ul>
+          <li>highlighting, errors as you type - the language's own messages, the access policy included;</li>
+          <li>completion of names, Java members (only what the policy leaves open), imports, host hooks;</li>
+          <li>go to declaration - into the script, a module, a Java class (its sources or decompiled), the API method a hook implements;</li>
+          <li>find usages, rename, structure view, folding, formatting, parameter info, quick documentation;</li>
+          <li>the host's context found as the language finds it: its descriptor (<code>META-INF/jumper/host.jmc</code>),
+              its globals, policy and the server's jars.</li>
+        </ul>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- the language: one language, three file types; only the main one names it (the other two are secondary) -->
+        <fileType name="Jumper" language="Jumper" extensions="jmp"
+                  implementationClass="me.padej.jumper.idea.JumperFileType" fieldName="SCRIPT"/>
+        <fileType name="Jumper Config" extensions="jmc"
+                  implementationClass="me.padej.jumper.idea.JumperFileType" fieldName="CONFIG"/>
+        <fileType name="Jumper Access Policy" extensions="jma"
+                  implementationClass="me.padej.jumper.idea.JumperFileType" fieldName="POLICY"/>
+        <lang.parserDefinition language="Jumper" implementationClass="me.padej.jumper.idea.lang.parser.JumperParserDefinition"/>
+
+        <!-- highlighting -->
+        <lang.syntaxHighlighterFactory language="Jumper" implementationClass="me.padej.jumper.idea.highlighter.JumperSyntaxHighlighterFactory"/>
+        <colorSettingsPage implementation="me.padej.jumper.idea.highlighter.JumperColorSettingsPage"/>
+        <annotator language="Jumper" implementationClass="me.padej.jumper.idea.annotator.JumperColorAnnotator"/>
+        <annotator language="Jumper" implementationClass="me.padej.jumper.idea.annotator.JumperAnnotator"/>
+
+        <!-- editing -->
+        <lang.braceMatcher language="Jumper" implementationClass="me.padej.jumper.idea.highlighter.JumperBraceMatcher"/>
+        <lang.commenter language="Jumper" implementationClass="me.padej.jumper.idea.highlighter.JumperCommenter"/>
+        <lang.quoteHandler language="Jumper" implementationClass="me.padej.jumper.idea.highlighter.JumperQuoteHandler"/>
+        <lang.foldingBuilder language="Jumper" implementationClass="me.padej.jumper.idea.editor.JumperFoldingBuilder"/>
+        <lang.formatter language="Jumper" implementationClass="me.padej.jumper.idea.editor.JumperFormattingModelBuilder"/>
+        <lang.psiStructureViewFactory language="Jumper" implementationClass="me.padej.jumper.idea.editor.JumperStructureViewFactory"/>
+
+        <!-- code insight -->
+        <completion.contributor language="Jumper" implementationClass="me.padej.jumper.idea.completion.JumperCompletionContributor"/>
+        <codeInsight.parameterInfo language="Jumper" implementationClass="me.padej.jumper.idea.editor.JumperParameterInfoHandler"/>
+        <lang.documentationProvider language="Jumper" implementationClass="me.padej.jumper.idea.editor.JumperDocumentationProvider"/>
+        <codeInsight.lineMarkerProvider language="Jumper" implementationClass="me.padej.jumper.idea.editor.JumperHooksNavigation$LineMarkers"/>
+        <gotoDeclarationHandler implementation="me.padej.jumper.idea.editor.JumperHooksNavigation$GotoHook"/>
+
+        <!-- usages and rename -->
+        <lang.findUsagesProvider language="Jumper" implementationClass="me.padej.jumper.idea.editor.JumperFindUsagesProvider"/>
+        <lang.refactoringSupport language="Jumper" implementationClass="me.padej.jumper.idea.editor.JumperRefactoringSupportProvider"/>
+        <lang.namesValidator language="Jumper" implementationClass="me.padej.jumper.idea.editor.JumperNamesValidator"/>
+
+        <!-- the host's jars as libraries: its classes resolve, open decompiled or from their -sources.jar -->
+        <additionalLibraryRootsProvider implementation="me.padej.jumper.idea.workspace.JumperLibraryRootsProvider"/>
+    </extensions>
+
+    <projectListeners>
+        <listener class="me.padej.jumper.idea.workspace.JumperFileListener" topic="com.intellij.openapi.vfs.newvfs.BulkFileListener"/>
+    </projectListeners>
+</idea-plugin>
