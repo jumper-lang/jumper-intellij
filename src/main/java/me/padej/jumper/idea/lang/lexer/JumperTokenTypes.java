@@ -130,7 +130,7 @@ public interface JumperTokenTypes {
             IElementType[] kws = {DYN, KW_INT, KW_LONG, KW_DOUBLE, KW_BOOLEAN, KW_STRING, VOID, CLASS, NEW, RETURN, IF, ELSE,
                     WHILE, FOR, DO, BREAK, CONTINUE, TRUE, FALSE, NULL, IMPORT, THIS, SUPER, EXTENDS, STATIC, TRY, CATCH,
                     FINALLY, THROW, SWITCH, CASE, DEFAULT};
-            for (IElementType k : kws) MAP.put(k.getDebugName(), k);
+            for (IElementType k : kws) MAP.put(((JumperTokenType) k).text(), k);
         }
     }
 }

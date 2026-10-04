@@ -1,5 +1,6 @@
 package me.padej.jumper.idea.workspace;
 
+import com.intellij.openapi.util.SimpleModificationTracker;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.psi.PsiFile;
 import me.padej.jumper.idea.JumperFileType;
@@ -30,17 +31,23 @@ import java.util.stream.Stream;
  * <li><b>Classpath:</b> the jars under the root, minus the jars of other hosts.</li>
  * </ol>
  *
- * Read from the disk, cached for {@value #TTL_MS} ms (as the language server re-reads contexts), jar probes by size and time.
+ * Read from the disk once and kept until a jar, a policy, a config or a descriptor changes (JumperFileListener calls
+ * {@link #invalidate}) - at most {@value #STALE_MS} ms, for what the IDE does not watch (a jar above the project);
+ * jar probes by size and time. The server's classpath (a walk of its folder) is read only when asked
+ * ({@link JumperContext#classpath()}: the host jars searched in the background), never for the editor.
  */
 public final class JumperWorkspace {
     static final int MAX_UP = 8, MAX_DEPTH = 8, MAX_JARS = 4096, MAX_DIR_ENTRIES = 512;
-    static final long TTL_MS = 3000;
+    static final long STALE_MS = 60_000;
+
+    /** Changes when what was read may be stale: values computed from contexts (types, hooks) depend on it. */
+    public static final SimpleModificationTracker MODIFICATIONS = new SimpleModificationTracker();
 
     private JumperWorkspace() {}
 
     private record Probe(long size, long mtime, String descriptor) {}
 
-    private record Cached(long at, JumperContext ctx) {}
+    private record Cached(long stamp, long at, JumperContext ctx) {}
 
     private static final Map<Path, Probe> PROBES = new ConcurrentHashMap<>();
     private static final Map<Path, Cached> CONTEXTS = new ConcurrentHashMap<>();
@@ -55,6 +62,14 @@ public final class JumperWorkspace {
         return path == null ? JumperContext.empty(kind) : contextFor(path);
     }
 
+    public static Path pathOf(String path) {
+        try {
+            return Path.of(path).toAbsolutePath().normalize();
+        } catch (InvalidPathException e) {
+            return null;
+        }
+    }
+
     public static Path pathOf(VirtualFile vf) {
         if (vf == null || !vf.isInLocalFileSystem()) return null;
         try {
@@ -66,31 +81,33 @@ public final class JumperWorkspace {
 
     public static JumperContext contextFor(Path file) {
         Path f = file.toAbsolutePath().normalize();
-        long now = System.currentTimeMillis();
+        long now = System.currentTimeMillis(), stamp = MODIFICATIONS.getModificationCount();
         Cached c = CONTEXTS.get(f);
-        if (c != null && now - c.at < TTL_MS) return c.ctx;
+        if (c != null && c.stamp == stamp && now - c.at < STALE_MS) return c.ctx;
         JumperContext ctx;
         try {
             ctx = compute(f);
-        } catch (RuntimeException e) {
-            ctx = new JumperContext(kindOf(f), f, f.getParent(), null, null, Map.of(), List.of(), List.of("context: " + e));
+        } catch (RuntimeException e) {   // a file system that misbehaves (no PSI is read here)
+            ctx = new JumperContext(kindOf(f), f, f.getParent(), null, null, Map.of(), List::of, List.of("context: " + e));
         }
         if (CONTEXTS.size() > 4096) CONTEXTS.clear();
-        CONTEXTS.put(f, new Cached(now, ctx));
+        CONTEXTS.put(f, new Cached(stamp, now, ctx));
         return ctx;
     }
 
-    /** Forget what was read: a jar or a policy changed. */
+    /** Forget what was read: a jar, a policy, a config changed. */
     public static void invalidate() {
         CONTEXTS.clear();
         CLASSPATHS.clear();
+        if (PROBES.size() > 4096) PROBES.clear();
+        MODIFICATIONS.incModificationCount();
     }
 
-    private record CachedPath(long at, List<Path> jars) {}
+    private record CachedPath(long stamp, long at, List<Path> jars) {}
 
     /** The jars under a root, by root and owner: a walk of the server folder is not repeated for every file. */
     private static final Map<String, CachedPath> CLASSPATHS = new ConcurrentHashMap<>();
-    private static final long CLASSPATH_TTL_MS = 30_000;
+    private static final long CLASSPATH_TTL_MS = 60_000;
 
     static JumperFileType.Kind kindOf(Path f) {
         String n = f.getFileName().toString();
@@ -126,15 +143,16 @@ public final class JumperWorkspace {
             if (access != null && !Files.isRegularFile(access))
                 notes.add(owner.name() + " names the policy " + owner.root().relativize(access) + ", which does not exist");
             Map<String, String> globals = kind == JumperFileType.Kind.SCRIPT ? owner.globals() : Map.of();
-            return new JumperContext(kind, f, owner.root(), owner, access, globals, classpath(owner.root(), hosts, owner), List.copyOf(notes));
+            HostDescriptor own = owner;
+            return new JumperContext(kind, f, owner.root(), owner, access, globals, () -> classpath(own.root(), hosts, own), List.copyOf(notes));
         }
         if (kind == JumperFileType.Kind.SCRIPT) {
             Path access = conventionPolicy(f, notes);
             Path root = access != null ? access.getParent() : f.getParent();
-            return new JumperContext(kind, f, root, null, access, Map.of(), access != null ? classpath(root, hosts, null) : List.of(),
+            return new JumperContext(kind, f, root, null, access, Map.of(), access != null ? () -> classpath(root, hosts, null) : List::of,
                     List.copyOf(notes));
         }
-        return new JumperContext(kind, f, f.getParent(), null, null, Map.of(), List.of(), List.copyOf(notes));
+        return new JumperContext(kind, f, f.getParent(), null, null, Map.of(), List::of, List.copyOf(notes));
     }
 
     // ------------------------------------------------------------------ hosts
@@ -237,11 +255,12 @@ public final class JumperWorkspace {
 
     static List<Path> classpath(Path root, List<HostDescriptor> hosts, HostDescriptor owner) {
         String key = root + "|" + (owner == null ? "" : owner.jar());
-        long now = System.currentTimeMillis();
+        long now = System.currentTimeMillis(), stamp = MODIFICATIONS.getModificationCount();
         CachedPath c = CLASSPATHS.get(key);
-        if (c != null && now - c.at < CLASSPATH_TTL_MS) return c.jars;
+        if (c != null && c.stamp == stamp && now - c.at < CLASSPATH_TTL_MS) return c.jars;
         List<Path> jars = walkClasspath(root, hosts, owner);
-        CLASSPATHS.put(key, new CachedPath(now, jars));
+        if (CLASSPATHS.size() > 256) CLASSPATHS.clear();
+        CLASSPATHS.put(key, new CachedPath(stamp, now, jars));
         return jars;
     }
 

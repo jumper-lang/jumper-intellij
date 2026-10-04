@@ -6,6 +6,8 @@ import com.intellij.lang.annotation.HighlightSeverity;
 import com.intellij.openapi.util.TextRange;
 import com.intellij.psi.*;
 import com.intellij.psi.tree.IElementType;
+import com.intellij.psi.util.CachedValueProvider;
+import com.intellij.psi.util.CachedValuesManager;
 import me.padej.jumper.idea.lang.lexer.JumperLiterals;
 import me.padej.jumper.idea.lang.lexer.JumperTokenTypes;
 import me.padej.jumper.idea.lang.psi.*;
@@ -105,8 +107,10 @@ public final class JumperAnnotator implements Annotator {
         while (first instanceof PsiWhiteSpace) first = first.getNextSibling();
         if (first == null) return;
         int end = first.getTextRange().getStartOffset();
-        int lineEnd = f.getText().indexOf('\n', end);
-        TextRange r = new TextRange(end, lineEnd < 0 ? f.getTextLength() : lineEnd);
+        CharSequence text = f.getViewProvider().getContents();
+        int lineEnd = end;
+        while (lineEnd < text.length() && text.charAt(lineEnd) != '\n') lineEnd++;
+        TextRange r = new TextRange(end, lineEnd);
         if (r.isEmpty()) return;
         for (String note : ctx.notes()) h.newAnnotation(HighlightSeverity.WEAK_WARNING, "Context: " + note).range(r).create();
     }
@@ -516,27 +520,40 @@ public final class JumperAnnotator implements Annotator {
         for (PsiElement s = scope.getFirstChild(); s != null; s = s.getNextSibling()) declaredIn(s, seen, h);
     }
 
-    /** The file: one statement at a time (the annotator visits each), against the ones before it. */
+    /** The file: a statement whose declaration repeats a name declared by a statement before it. */
     private static void duplicates(JumperFile file, JmpElement statement, AnnotationHolder h) {
-        Map<String, PsiElement> seen = new HashMap<>();
-        for (PsiElement s = file.getFirstChild(); s != null; s = s.getNextSibling()) {
-            if (s == statement) {
-                Map<String, PsiElement> before = new HashMap<>(seen);
-                declaredIn(s, before, h);
-                return;
+        Set<PsiElement> dups = topLevelDuplicates(file);
+        if (dups.isEmpty()) return;
+        for (JmpNamedElement d : declarations(statement))
+            if (dups.contains(d)) error(h, d.getNameIdentifier(), "Variable '" + d.getName() + "' is already declared in this scope");
+    }
+
+    /** The redeclarations of the top level, found in one pass over it (not once per statement) and kept until it changes. */
+    private static Set<PsiElement> topLevelDuplicates(JumperFile file) {
+        return CachedValuesManager.getCachedValue(file, () -> {
+            Map<String, PsiElement> seen = new HashMap<>();
+            Set<PsiElement> dups = new HashSet<>();
+            for (PsiElement s = file.getFirstChild(); s != null; s = s.getNextSibling()) {
+                for (JmpNamedElement d : declarations(s)) {
+                    String n = d.getName();
+                    if (n != null && seen.putIfAbsent(n, d) != null) dups.add(d);
+                }
             }
-            declaredIn(s, seen, null);
-        }
+            return CachedValueProvider.Result.create(dups, file);
+        });
+    }
+
+    private static List<JmpNamedElement> declarations(PsiElement s) {
+        if (s instanceof JmpFunction || s instanceof JmpClass) return List.of((JmpNamedElement) s);
+        if (s instanceof JmpElement e && e.is(VARIABLE_DECLARATION)) return List.copyOf(e.children(JmpVariable.class));
+        return List.of();
     }
 
     private static void declaredIn(PsiElement s, Map<String, PsiElement> seen, AnnotationHolder h) {
-        List<JmpNamedElement> decls = new ArrayList<>();
-        if (s instanceof JmpFunction || s instanceof JmpClass) decls.add((JmpNamedElement) s);
-        else if (s instanceof JmpElement e && e.is(VARIABLE_DECLARATION)) decls.addAll(e.children(JmpVariable.class));
-        for (JmpNamedElement d : decls) {
+        for (JmpNamedElement d : declarations(s)) {
             String n = d.getName();
             if (n == null) continue;
-            if (seen.putIfAbsent(n, d) != null && h != null)
+            if (seen.putIfAbsent(n, d) != null)
                 error(h, d.getNameIdentifier(), "Variable '" + n + "' is already declared in this scope");
         }
     }

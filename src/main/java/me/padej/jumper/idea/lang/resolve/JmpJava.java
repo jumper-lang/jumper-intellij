@@ -3,11 +3,18 @@ package me.padej.jumper.idea.lang.resolve;
 import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.project.IndexNotReadyException;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.util.Key;
 import com.intellij.psi.*;
 import com.intellij.psi.search.GlobalSearchScope;
+import com.intellij.psi.util.CachedValue;
+import com.intellij.psi.util.CachedValueProvider;
+import com.intellij.psi.util.CachedValuesManager;
+import com.intellij.psi.util.PsiModificationTracker;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -17,6 +24,9 @@ import java.util.Map;
  * methods and fields of a class or of its instances, properties (`obj.name` reads `getName()`/`isName()`).
  * Classes are looked up in the whole project - its libraries, its JDK and the host jars the plugin adds as
  * libraries (JumperLibraryRootsProvider); a decompiled class or a `-sources.jar` is then the platform's.
+ * <p>
+ * The members a script sees of a class are worked out once per class (a server API class has hundreds of methods
+ * with its supertypes, and every name of a script asks) and kept until the code changes.
  */
 public final class JmpJava {
     private JmpJava() {}
@@ -82,24 +92,50 @@ public final class JmpJava {
         return m.hasModifierProperty(PsiModifier.STATIC);
     }
 
-    /** Public methods callable on an instance (statics = false: all of them) or on the class (statics = true), by name. */
-    public static List<PsiMethod> methods(PsiClass c, boolean statics) {
-        Map<String, PsiMethod> out = new LinkedHashMap<>();
+    /** What a script sees of a class, on an instance or on the class itself: worked out once (see the class comment). */
+    private record Members(List<PsiMethod> methods, Map<String, List<PsiMethod>> byName, List<PsiField> fields,
+                           Map<String, PsiField> fieldByName) {}
+
+    private static final Key<CachedValue<Members>> INSTANCE_MEMBERS = Key.create("jumper.instanceMembers");
+    private static final Key<CachedValue<Members>> STATIC_MEMBERS = Key.create("jumper.staticMembers");
+
+    private static Members members(PsiClass c, boolean statics) {
+        return CachedValuesManager.getCachedValue(c, statics ? STATIC_MEMBERS : INSTANCE_MEMBERS,
+                () -> CachedValueProvider.Result.create(computeMembers(c, statics), PsiModificationTracker.MODIFICATION_COUNT));
+    }
+
+    private static Members computeMembers(PsiClass c, boolean statics) {
+        Map<String, PsiMethod> bySignature = new LinkedHashMap<>();
         List<PsiMethod> all = new ArrayList<>(List.of(c.getAllMethods()));
         if (c.isInterface() && !statics) {   // an object behind an interface is still an Object (toString, equals...)
-            PsiClass object = findClass("java.lang.Object", c);
+            PsiClass object = findClass(CommonClassNames.JAVA_LANG_OBJECT, c);
             if (object != null) all.addAll(List.of(object.getMethods()));
         }
         for (PsiMethod m : all) {
             if (m.isConstructor() || !isPublic(m)) continue;
             if (statics && !isStatic(m)) continue;
-            out.putIfAbsent(signatureKey(m), m);
+            bySignature.putIfAbsent(signatureKey(m), m);
         }
-        List<PsiMethod> list = new ArrayList<>(out.values());
-        list.sort((a, b) -> a.getName().equals(b.getName())
+        List<PsiMethod> methods = new ArrayList<>(bySignature.values());
+        methods.sort((a, b) -> a.getName().equals(b.getName())
                 ? Integer.compare(a.getParameterList().getParametersCount(), b.getParameterList().getParametersCount())
                 : a.getName().compareTo(b.getName()));
-        return list;
+        Map<String, List<PsiMethod>> byName = new HashMap<>();
+        for (PsiMethod m : methods) byName.computeIfAbsent(m.getName(), k -> new ArrayList<>()).add(m);
+        byName.replaceAll((k, v) -> List.copyOf(v));
+        List<PsiField> fields = new ArrayList<>();
+        Map<String, PsiField> fieldByName = new HashMap<>();
+        for (PsiField f : c.getAllFields()) {
+            if (!isPublic(f) || statics && !isStatic(f)) continue;
+            fields.add(f);
+            fieldByName.putIfAbsent(f.getName(), f);
+        }
+        return new Members(List.copyOf(methods), byName, List.copyOf(fields), fieldByName);
+    }
+
+    /** Public methods callable on an instance (statics = false: all of them) or on the class (statics = true), by name. */
+    public static List<PsiMethod> methods(PsiClass c, boolean statics) {
+        return members(c, statics).methods();
     }
 
     private static String signatureKey(PsiMethod m) {
@@ -109,9 +145,7 @@ public final class JmpJava {
     }
 
     public static List<PsiMethod> methodsNamed(PsiClass c, boolean statics, String name) {
-        List<PsiMethod> out = new ArrayList<>();
-        for (PsiMethod m : methods(c, statics)) if (m.getName().equals(name)) out.add(m);
-        return out;
+        return members(c, statics).byName().getOrDefault(name, Collections.emptyList());
     }
 
     /** The overloads that take n arguments (a varargs one: n >= its fixed ones) - MemberCheck.arity. */
@@ -125,27 +159,19 @@ public final class JmpJava {
     }
 
     public static List<PsiField> fields(PsiClass c, boolean statics) {
-        List<PsiField> out = new ArrayList<>();
-        for (PsiField f : c.getAllFields()) {
-            if (!isPublic(f)) continue;
-            if (statics && !isStatic(f)) continue;
-            out.add(f);
-        }
-        return out;
+        return members(c, statics).fields();
     }
 
     public static @Nullable PsiField field(PsiClass c, boolean statics, String name) {
-        for (PsiField f : fields(c, statics)) if (f.getName().equals(name)) return f;
-        return null;
+        return members(c, statics).fieldByName().get(name);
     }
 
     /** `obj.name` read as a value when there is no field: `getName()` or `isName()` with no parameters. */
     public static @Nullable PsiMethod getter(PsiClass c, String name) {
         if (name.isEmpty()) return null;
         String cap = Character.toUpperCase(name.charAt(0)) + name.substring(1);
-        for (PsiMethod m : methods(c, false)) {
-            if (m.getParameterList().getParametersCount() == 0 && !isStatic(m) && (m.getName().equals("get" + cap) || m.getName().equals("is" + cap)))
-                return m;
+        for (String n : new String[] {"get" + cap, "is" + cap}) {
+            for (PsiMethod m : methodsNamed(c, false, n)) if (m.getParameterList().getParametersCount() == 0 && !isStatic(m)) return m;
         }
         return null;
     }
@@ -161,18 +187,6 @@ public final class JmpJava {
         if (!(t instanceof PsiClassType ct)) return null;
         PsiClass c = ct.resolve();
         return c == null || c instanceof PsiTypeParameter ? null : c;
-    }
-
-    /** The common return type of the methods, or null if they differ (Members.returnType). */
-    public static @Nullable PsiType commonReturnType(List<PsiMethod> ms) {
-        PsiType t = null;
-        for (PsiMethod m : ms) {
-            PsiType r = m.getReturnType();
-            if (r == null) return null;
-            if (t == null) t = r;
-            else if (!t.equals(r)) return null;
-        }
-        return t;
     }
 
     /** `int size()`, `static double max(double, double)` - Members.signature. */

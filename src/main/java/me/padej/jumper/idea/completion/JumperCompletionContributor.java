@@ -96,6 +96,7 @@ public final class JumperCompletionContributor extends CompletionContributor {
             return;
         }
         PsiClass cls = t.java();
+        if (cls == null) return;   // an array: no members
         Set<String> seen = new HashSet<>();
         for (PsiMethod m : JmpJava.methods(cls, t.statics())) {
             if (JmpJava.isObjectMethod(m) && OBJECT_NOISE.contains(m.getName())) continue;

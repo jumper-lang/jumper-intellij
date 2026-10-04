@@ -44,6 +44,10 @@ jobs:
           chmod +x gradlew
           ./gradlew test buildPlugin
 
+      # what JetBrains Marketplace checks on upload: compatibility with the IDE versions, internal API
+      - name: Plugin Verifier
+        run: ./gradlew verifyPlugin
+
       - uses: actions/upload-artifact@v4
         with:
           name: plugin

@@ -20,7 +20,7 @@
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
-    <depends>com.intellij.modules.java</depends>
+    <depends>com.intellij.java</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <!-- the language: one language, three file types; only the main one names it (the other two are secondary) -->

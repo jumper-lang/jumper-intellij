@@ -76,7 +76,7 @@ public final class JumperPolicy {
 
     // ------------------------------------------------------------------ reading
 
-    private record Cached(long size, long mtime, JumperPolicy policy) {}
+    private record Cached(long stamp, long at, long size, long mtime, JumperPolicy policy) {}
 
     private static final Map<Path, Cached> CACHE = new ConcurrentHashMap<>();
 
@@ -85,13 +85,21 @@ public final class JumperPolicy {
         return ctx == null || ctx.access() == null ? null : load(ctx.access());
     }
 
+    /**
+     * The policy in a file, read again only when it may have changed: the file system is not asked for every name the
+     * editor checks, only after a change the IDE saw ({@link JumperWorkspace#MODIFICATIONS}) or a minute later - then
+     * by size and time.
+     */
     public static JumperPolicy load(Path jma) {
+        long stamp = JumperWorkspace.MODIFICATIONS.getModificationCount(), now = System.currentTimeMillis();
+        Cached c = CACHE.get(jma);
+        if (c != null && c.stamp == stamp && now - c.at < JumperWorkspace.STALE_MS) return c.policy;
         try {
             var a = Files.readAttributes(jma, java.nio.file.attribute.BasicFileAttributes.class);
-            Cached c = CACHE.get(jma);
-            if (c != null && c.size == a.size() && c.mtime == a.lastModifiedTime().toMillis()) return c.policy;
-            JumperPolicy p = parse(jma, Files.readString(jma));
-            CACHE.put(jma, new Cached(a.size(), a.lastModifiedTime().toMillis(), p));
+            JumperPolicy p = c != null && c.size == a.size() && c.mtime == a.lastModifiedTime().toMillis() ? c.policy
+                    : parse(jma, Files.readString(jma));
+            if (CACHE.size() > 256) CACHE.clear();
+            CACHE.put(jma, new Cached(stamp, now, a.size(), a.lastModifiedTime().toMillis(), p));
             return p;
         } catch (IOException | RuntimeException e) {
             return null;

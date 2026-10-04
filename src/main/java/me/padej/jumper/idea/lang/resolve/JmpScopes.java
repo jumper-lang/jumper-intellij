@@ -1,13 +1,22 @@
 package me.padej.jumper.idea.lang.resolve;
 
+import com.intellij.openapi.util.Key;
 import com.intellij.psi.PsiClass;
 import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiFile;
+import com.intellij.psi.util.CachedValue;
+import com.intellij.psi.util.CachedValueProvider;
+import com.intellij.psi.util.CachedValuesManager;
+import com.intellij.psi.util.PsiModificationTracker;
 import me.padej.jumper.idea.lang.psi.*;
 import me.padej.jumper.idea.workspace.JumperContext;
 import me.padej.jumper.idea.workspace.JumperWorkspace;
+import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -26,6 +35,9 @@ import static me.padej.jumper.idea.lang.parser.JumperElementTypes.*;
  *   <li>then what the file does not declare: the host's globals, the built-ins, `Policy` in a .jma.</li>
  * </ul>
  * Java classes by simple name (imports, java.lang) and packages are looked up by {@link JmpResolver} by name.
+ * <p>
+ * What a block declares is listed once per block, by name, and kept until the code changes: resolving a name looks
+ * at the declarations of that name only, not at every statement of every block around it.
  */
 public final class JmpScopes {
     private JmpScopes() {}
@@ -37,52 +49,72 @@ public final class JmpScopes {
 
     /** Every name visible at `place`, innermost first (a name may come twice: the first one wins). */
     public static void processDeclarations(PsiElement place, Processor p) {
+        processDeclarations(place, null, p);
+    }
+
+    /**
+     * The declarations visible at `place`, innermost first; with a `name`, only those of that name (what resolving
+     * a name needs - much less to look at than every name), else all of them.
+     */
+    public static void processDeclarations(PsiElement place, @Nullable String name, Processor p) {
         int offset = place.getTextRange().getStartOffset();
         PsiElement child = place;
         for (PsiElement parent = place.getParent(); parent != null; child = parent, parent = parent.getParent()) {
             if (parent instanceof JmpBlock || parent instanceof JumperFile) {
-                if (!processBlock(parent, offset, p)) return;
+                if (!processBlock(parent, offset, name, p)) return;
                 if (parent instanceof PsiFile) break;
             } else if (parent instanceof JmpFunction f) {
-                if (child instanceof JmpBlock) for (JmpParameter prm : f.getParameters()) if (!named(prm, p)) return;
+                if (child instanceof JmpBlock) for (JmpParameter prm : f.getParameters()) if (!named(prm, name, p)) return;
             } else if (parent instanceof JmpLambda l) {
-                if (!(child instanceof JmpParameterList)) for (JmpParameter prm : l.getParameters()) if (!named(prm, p)) return;
+                if (!(child instanceof JmpParameterList)) for (JmpParameter prm : l.getParameters()) if (!named(prm, name, p)) return;
             } else if (parent instanceof JmpClassBody body) {
-                for (JmpNamedElement m : body.owner().allMembers()) if (!named(m, p)) return;
+                for (JmpNamedElement m : body.owner().allMembers()) if (!named(m, name, p)) return;
             } else if (parent instanceof JmpElement e) {
                 if (e.is(CATCH_SECTION)) {
-                    if (child instanceof JmpBlock) for (JmpParameter prm : e.children(JmpParameter.class)) if (!named(prm, p)) return;
+                    if (child instanceof JmpBlock) for (JmpParameter prm : e.children(JmpParameter.class)) if (!named(prm, name, p)) return;
                 } else if (e.is(FOR_STATEMENT)) {
                     for (PsiElement c = e.getFirstChild(); c != null; c = c.getNextSibling()) {
                         if (c instanceof JmpElement d && d.is(VARIABLE_DECLARATION))
-                            for (JmpVariable v : d.children(JmpVariable.class)) if (before(v, offset) && !named(v, p)) return;
+                            for (JmpVariable v : d.children(JmpVariable.class)) if (before(v, offset) && !named(v, name, p)) return;
                     }
                 } else if (e.is(FOREACH_STATEMENT)) {
                     if (!(child instanceof JmpVariable) && !(child instanceof JmpTypeElement) && !JmpPsiUtil.isExpression(child))
-                        for (JmpVariable v : e.children(JmpVariable.class)) if (!named(v, p)) return;
+                        for (JmpVariable v : e.children(JmpVariable.class)) if (!named(v, name, p)) return;
                 } else if (e.is(SWITCH_STATEMENT)) {
                     for (PsiElement br = e.getFirstChild(); br != null; br = br.getNextSibling()) {
                         if (!(br instanceof JmpElement b) || !b.is(SWITCH_BRANCH)) continue;
                         for (PsiElement s = b.getFirstChild(); s != null; s = s.getNextSibling()) {
                             if (s instanceof JmpElement d && d.is(VARIABLE_DECLARATION))
-                                for (JmpVariable v : d.children(JmpVariable.class)) if (before(v, offset) && !named(v, p)) return;
+                                for (JmpVariable v : d.children(JmpVariable.class)) if (before(v, offset) && !named(v, name, p)) return;
                         }
                     }
                 }
             }
         }
         PsiFile file = place.getContainingFile();
-        if (file instanceof JumperFile jf) processOutside(jf, place, p);
+        if (file instanceof JumperFile jf) processOutside(jf, place, name, p);
     }
 
     /** What the file does not declare but a script sees: host globals, built-ins. */
     public static boolean processOutside(JumperFile file, PsiElement context, Processor p) {
+        return processOutside(file, context, null, p);
+    }
+
+    private static boolean processOutside(JumperFile file, PsiElement context, @Nullable String name, Processor p) {
         JumperContext ctx = JumperWorkspace.contextFor(file);
-        for (Map.Entry<String, String> g : ctx.globals().entrySet())
-            if (!p.process(g.getKey(), new JmpSynthetic(JmpSynthetic.Kind.HOST_GLOBAL, g.getKey(), g.getValue(), context))) return false;
-        for (String b : JmpBuiltins.NAMES)
-            if (!p.process(b, new JmpSynthetic(JmpSynthetic.Kind.BUILTIN, b, JmpBuiltins.SIGNATURES.get(b).get(0), context))) return false;
-        if (file.isPolicy()) {
+        if (name != null) {
+            String type = ctx.globals().get(name);
+            if (type != null && !p.process(name, new JmpSynthetic(JmpSynthetic.Kind.HOST_GLOBAL, name, type, context))) return false;
+            List<String> sig = JmpBuiltins.SIGNATURES.get(name);
+            if (sig != null && JmpBuiltins.NAMES.contains(name) && !p.process(name, new JmpSynthetic(JmpSynthetic.Kind.BUILTIN, name, sig.get(0), context)))
+                return false;
+        } else {
+            for (Map.Entry<String, String> g : ctx.globals().entrySet())
+                if (!p.process(g.getKey(), new JmpSynthetic(JmpSynthetic.Kind.HOST_GLOBAL, g.getKey(), g.getValue(), context))) return false;
+            for (String b : JmpBuiltins.NAMES)
+                if (!p.process(b, new JmpSynthetic(JmpSynthetic.Kind.BUILTIN, b, JmpBuiltins.SIGNATURES.get(b).get(0), context))) return false;
+        }
+        if (file.isPolicy() && (name == null || name.equals("Policy"))) {
             PsiClass policy = JmpJava.findClass("me.padej.jumper.security.Policy", context);
             if (policy != null && !p.process("Policy", policy)) return false;
         }
@@ -93,26 +125,80 @@ public final class JmpScopes {
         return v.getTextRange().getEndOffset() <= offset;
     }
 
-    private static boolean named(JmpNamedElement e, Processor p) {
+    private static boolean named(JmpNamedElement e, @Nullable String name, Processor p) {
         String n = e.getName();
-        return n == null || p.process(n, e);
+        return n == null || name != null && !name.equals(n) || p.process(n, e);
     }
 
-    /** The declarations of a block (or the file) seen at `offset`. */
-    private static boolean processBlock(PsiElement block, int offset, Processor p) {
+    // ------------------------------------------------------------------ what a block declares
+
+    /**
+     * A declaration of a block: a function or a class (visible in the whole block), a variable (after its
+     * declarator), a Java import (after it), or a module import (its names, in the whole block).
+     */
+    private record Decl(@Nullable String name, PsiElement element, int visibleFrom, int order) {}
+
+    /** The declarations of a block in order, and by name; the module imports apply to every name. */
+    private record BlockIndex(List<Decl> all, Map<String, List<Decl>> byName, List<Decl> modules) {}
+
+    private static final Key<CachedValue<BlockIndex>> BLOCK_INDEX = Key.create("jumper.blockDeclarations");
+
+    private static BlockIndex index(PsiElement block) {
+        return CachedValuesManager.getCachedValue(block, BLOCK_INDEX,
+                () -> CachedValueProvider.Result.create(computeIndex(block), PsiModificationTracker.MODIFICATION_COUNT));
+    }
+
+    private static BlockIndex computeIndex(PsiElement block) {
+        List<Decl> all = new ArrayList<>();
         for (PsiElement c = block.getFirstChild(); c != null; c = c.getNextSibling()) {
             if (c instanceof JmpFunction || c instanceof JmpClass) {
-                if (!named((JmpNamedElement) c, p)) return false;
+                all.add(new Decl(((JmpNamedElement) c).getName(), c, -1, all.size()));
             } else if (c instanceof JmpElement e && e.is(VARIABLE_DECLARATION)) {
-                for (JmpVariable v : e.children(JmpVariable.class)) if (before(v, offset) && !named(v, p)) return false;
+                for (JmpVariable v : e.children(JmpVariable.class))
+                    all.add(new Decl(v.getName(), v, v.getTextRange().getEndOffset(), all.size()));
             } else if (c instanceof JmpModuleImport mi) {
+                all.add(new Decl(null, mi, -1, all.size()));
+            } else if (c instanceof JmpImportStatement imp && imp.getSimpleName() != null) {
+                all.add(new Decl(imp.getSimpleName(), imp, imp.getTextRange().getEndOffset(), all.size()));
+            }
+        }
+        Map<String, List<Decl>> byName = new HashMap<>();
+        List<Decl> modules = new ArrayList<>();
+        for (Decl d : all) {
+            if (d.name() != null) byName.computeIfAbsent(d.name(), k -> new ArrayList<>(1)).add(d);
+            else if (d.element() instanceof JmpModuleImport) modules.add(d);
+        }
+        return new BlockIndex(List.copyOf(all), byName, List.copyOf(modules));
+    }
+
+    /** The declarations of a block (or the file) seen at `offset` - of one name, or all. */
+    private static boolean processBlock(PsiElement block, int offset, @Nullable String name, Processor p) {
+        BlockIndex idx = index(block);
+        List<Decl> decls;
+        if (name == null) decls = idx.all();
+        else {
+            List<Decl> named = idx.byName().getOrDefault(name, List.of());
+            if (idx.modules().isEmpty()) decls = named;
+            else {   // in the order of the block: of two, the first wins
+                decls = new ArrayList<>(named);
+                decls.addAll(idx.modules());
+                decls.sort((a, b) -> Integer.compare(a.order(), b.order()));
+            }
+        }
+        for (Decl d : decls) {
+            if (d.element() instanceof JmpModuleImport mi) {
                 JumperFile m = mi.resolveModule();
-                if (m != null && m != block.getContainingFile()) {
-                    for (JmpNamedElement d : m.topLevelDeclarations()) if (!named(d, p)) return false;
-                }
-            } else if (c instanceof JmpImportStatement imp && imp.getTextRange().getEndOffset() <= offset) {
+                if (m == null || m == block.getContainingFile()) continue;
+                BlockIndex mod = index(m);
+                for (Decl md : name == null ? mod.all() : mod.byName().getOrDefault(name, List.of()))
+                    if (md.element() instanceof JmpNamedElement n && !named(n, name, p)) return false;
+            } else if (d.visibleFrom() > offset) {
+                continue;   // a variable, an import: not yet
+            } else if (d.element() instanceof JmpImportStatement imp) {
                 PsiClass cls = importedClass(imp);
-                if (cls != null && imp.getSimpleName() != null && !p.process(imp.getSimpleName(), cls)) return false;
+                if (cls != null && !p.process(d.name(), cls)) return false;
+            } else if (d.element() instanceof JmpNamedElement n && !named(n, name, p)) {
+                return false;
             }
         }
         return true;

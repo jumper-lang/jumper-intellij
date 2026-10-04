@@ -3,19 +3,19 @@ package me.padej.jumper.idea.workspace;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.components.Service;
-import com.intellij.openapi.progress.ProcessCanceledException;
+import com.intellij.openapi.fileTypes.FileType;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.AdditionalLibraryRootsListener;
 import com.intellij.openapi.roots.JavaSyntheticLibrary;
-import com.intellij.openapi.roots.ProjectFileIndex;
-import com.intellij.openapi.roots.ProjectRootManager;
 import com.intellij.openapi.roots.SyntheticLibrary;
 import com.intellij.openapi.vfs.JarFileSystem;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
-import com.intellij.openapi.vfs.VirtualFileVisitor;
-import com.intellij.openapi.vfs.VfsUtilCore;
+import com.intellij.psi.search.FileTypeIndex;
+import com.intellij.psi.search.GlobalSearchScope;
+import com.intellij.util.concurrency.AppExecutorUtil;
+import me.padej.jumper.idea.JumperFileType;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -25,19 +25,28 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The host jars of a project (see JumperLibraryRootsProvider): found once, again when a jar, a policy or a Jumper
  * file of the project changes (JumperFileListener); when they are not the same any more the IDE is told.
+ * <p>
+ * Nothing of it runs on the UI thread or while the IDE builds its indexes: the Jumper files are looked up in the
+ * file type index (once the indexes are ready, in a read action that gives way to writes), the jars are read after,
+ * with no lock held.
  */
 @Service(Service.Level.PROJECT)
 public final class JumperHostLibraries {
-    private static final int MAX_FILES = 2000, MAX_DEPTH = 10;
+    private static final int MAX_FILES = 2000;
+    private static final List<FileType> FILE_TYPES = List.of(JumperFileType.SCRIPT, JumperFileType.CONFIG, JumperFileType.POLICY);
 
     private final Project project;
     private volatile List<Path> jars;
     private volatile Collection<SyntheticLibrary> libraries;
-    private final AtomicBoolean started = new AtomicBoolean(), pending = new AtomicBoolean();
+    private final AtomicBoolean started = new AtomicBoolean();
+    /** Searches in the order they were asked for: an older one finishing late does not undo a newer one. */
+    private final AtomicLong asked = new AtomicLong();
+    private long published;
 
     public JumperHostLibraries(Project project) {
         this.project = project;
@@ -69,24 +78,21 @@ public final class JumperHostLibraries {
     }
 
     private void scheduleSearch() {
-        if (!pending.compareAndSet(false, true)) return;   // one search at a time is enough, it sees the latest state
-        ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            pending.set(false);
-            if (project.isDisposed()) return;
-            List<Path> found;
-            try {
-                // only the walk over the project needs the read lock; the jars are read without it (reading zips
-                // under the lock kept write actions, and so the UI, waiting)
-                List<Path> files = ReadAction.nonBlocking(this::findFiles).expireWith(project).executeSynchronously();
-                found = jarsOf(files);
-            } catch (ProcessCanceledException e) {
-                return;
-            }
-            publish(found);
-        });
+        long n = asked.incrementAndGet();
+        // a newer request cancels the one still waiting (coalesceBy); the jars are read once the read action is over
+        ReadAction.nonBlocking(this::findFiles)
+                .inSmartMode(project)
+                .expireWith(project)
+                .coalesceBy(this)
+                .submit(AppExecutorUtil.getAppExecutorService())
+                .onSuccess(files -> AppExecutorUtil.getAppExecutorService().execute(() -> {
+                    if (!project.isDisposed()) publish(n, jarsOf(files));
+                }));
     }
 
-    private synchronized void publish(List<Path> found) {
+    private synchronized void publish(long n, List<Path> found) {
+        if (n < published) return;
+        published = n;
         List<Path> old = jars;
         if (found.equals(old)) return;
         Collection<SyntheticLibrary> oldLibs = libraries;
@@ -94,12 +100,10 @@ public final class JumperHostLibraries {
         jars = found;
         libraries = newLibs;
         if (roots(oldLibs).isEmpty() && roots(newLibs).isEmpty()) return;
-        ApplicationManager.getApplication().invokeLater(() -> {
-            if (project.isDisposed()) return;
-            ApplicationManager.getApplication().runWriteAction(() ->
-                    AdditionalLibraryRootsListener.fireAdditionalLibraryChanged(project, "Jumper host jars",
-                            roots(oldLibs), roots(newLibs), "Jumper"));
-        });
+        // the platform's way to say that the roots of an AdditionalLibraryRootsProvider changed (in a write action)
+        ApplicationManager.getApplication().invokeLater(() -> ApplicationManager.getApplication().runWriteAction(() ->
+                AdditionalLibraryRootsListener.fireAdditionalLibraryChanged(project, "Jumper host jars",
+                        roots(oldLibs), roots(newLibs), "Jumper")), project.getDisposed());
     }
 
     private static Collection<VirtualFile> roots(Collection<SyntheticLibrary> libs) {
@@ -112,30 +116,31 @@ public final class JumperHostLibraries {
         return out;
     }
 
-    /** The project's Jumper files. Only ever runs in the background (see libraries), in a read action. */
+    /** The project's Jumper files (not in excluded, hidden or node_modules folders), from the file type index. */
     private List<Path> findFiles() {
-        Set<Path> dirs = new LinkedHashSet<>();
-        int[] files = {0};
-        ProjectFileIndex index = ProjectFileIndex.getInstance(project);
-        for (VirtualFile root : ProjectRootManager.getInstance(project).getContentRoots()) {
-            VfsUtilCore.visitChildrenRecursively(root, new VirtualFileVisitor<Void>(VirtualFileVisitor.limit(MAX_DEPTH)) {
-                @Override
-                public boolean visitFile(VirtualFile file) {
-                    ProgressManager.checkCanceled();   // a write action is waiting: give way, the search restarts
-                    if (files[0] >= MAX_FILES) return false;
-                    if (file.isDirectory()) return !index.isExcluded(file) && !file.getName().startsWith(".")
-                            && !file.getName().equals("node_modules");
-                    String ext = file.getExtension();
-                    if ("jmp".equals(ext) || "jmc".equals(ext) || "jma".equals(ext)) {
-                        files[0]++;
-                        Path p = JumperWorkspace.pathOf(file);
-                        if (p != null) dirs.add(p);
-                    }
-                    return true;
-                }
-            });
+        Set<Path> out = new LinkedHashSet<>();
+        GlobalSearchScope scope = GlobalSearchScope.projectScope(project);
+        String basePath = project.getBasePath();
+        Path base = basePath == null ? null : JumperWorkspace.pathOf(basePath);
+        for (FileType type : FILE_TYPES) {
+            FileTypeIndex.processFiles(type, file -> {
+                ProgressManager.checkCanceled();   // a write action is waiting: give way, the search restarts
+                Path p = JumperWorkspace.pathOf(file);
+                if (p != null && !hidden(base, p)) out.add(p);
+                return out.size() < MAX_FILES;
+            }, scope);
         }
-        return new ArrayList<>(dirs);
+        return new ArrayList<>(out);
+    }
+
+    /** In a hidden folder (`.gradle`, `.idea`) or node_modules of the project. */
+    private static boolean hidden(Path base, Path p) {
+        if (base == null || p.getParent() == null || !p.startsWith(base)) return false;
+        for (Path part : base.relativize(p.getParent())) {
+            String n = part.toString();
+            if (n.startsWith(".") || n.equals("node_modules")) return true;
+        }
+        return false;
     }
 
     /** The classpath of every context of these files: plain file reading, no read action. */

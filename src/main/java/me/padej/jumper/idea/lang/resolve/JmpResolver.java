@@ -47,7 +47,7 @@ public final class JmpResolver implements ResolveCache.PolyVariantResolver<JmpRe
         PsiElement[] found = {null};
         // the type of a declaration (`Point p`): only what can be a class; `new cls(...)` takes any value
         boolean typePosition = e.isTypeName();
-        JmpScopes.processDeclarations(e, (n, target) -> {
+        JmpScopes.processDeclarations(e, name, (n, target) -> {
             if (!n.equals(name)) return true;
             if (typePosition && !(target instanceof JmpClass || target instanceof PsiClass)) return true;
             found[0] = target;
@@ -102,6 +102,7 @@ public final class JmpResolver implements ResolveCache.PolyVariantResolver<JmpRe
         JmpType type = JmpTypes.typeOf(q);
         if (type == null) return ResolveResult.EMPTY_ARRAY;
         if (type.script() != null) return one(type.script().findMember(name));
+        if (type.java() == null) return ResolveResult.EMPTY_ARRAY;   // an array: no members
         return javaMember(e, type.java(), type.statics(), name);
     }
 
