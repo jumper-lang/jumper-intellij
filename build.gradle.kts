@@ -12,7 +12,7 @@ plugins {
 }
 
 group = "me.padej.jumper"
-version = "0.11.1"
+version = "0.11.2"
 
 repositories {
     mavenCentral()
@@ -48,6 +48,8 @@ intellijPlatform {
             untilBuild = provider { null }   // no upper bound: 2025.2 and later too
         }
         changeNotes = """
+	    0.11.2: the plugin is named Jumper Language on JetBrains Marketplace (the name Jumper is taken).
+            <br>
             0.11.1: the variable of a for-each has the type of the elements (`for (dyn p : server.players())` -
             completion and Go to Declaration on `p.`), type arguments of Java generics are followed
             (`players().get(0)`); faster: the members of Java classes, the file's context and policy are read once

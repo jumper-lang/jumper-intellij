@@ -3,7 +3,7 @@
      language and of its language server ported from jumper-lang/jumper - no language server runs. -->
 <idea-plugin>
     <id>me.padej.jumper.Jumper</id>
-    <name>Jumper</name>
+    <name>Jumper Language</name>
     <vendor url="https://github.com/jumper-lang">Padej_</vendor>
 
     <description><![CDATA[
